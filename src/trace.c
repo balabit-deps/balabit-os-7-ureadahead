@@ -117,17 +117,20 @@ trace (int daemonise,
        int timeout)
 {
 	int                 dfd;
+	FILE                *fp;
 	int                 unmount = FALSE;
 	int                 old_sys_open_enabled = 0;
 	int                 old_open_exec_enabled = 0;
 	int                 old_uselib_enabled = 0;
 	int                 old_tracing_enabled = 0;
+	int                 old_buffer_size_kb = 0;
 	struct sigaction    act;
 	struct sigaction    old_sigterm;
 	struct sigaction    old_sigint;
 	struct timeval      tv;
 	nih_local PackFile *files = NULL;
 	size_t              num_files = 0;
+	size_t              num_cpus = 0;
 
 	/* Mount debugfs if not already mounted */
 	dfd = open (PATH_DEBUGFS "/tracing", O_RDONLY | O_NOATIME);
@@ -148,6 +151,28 @@ trace (int daemonise,
 		unmount = TRUE;
 	}
 
+	/*
+	 * Count the number of CPUs, default to 1 on error. 
+	 */
+	fp = fopen("/proc/cpuinfo", "r");
+	if (fp) {
+		int line_size=1024;
+		char *processor="processor";
+		char *line = malloc(line_size);
+		if (line) {
+			num_cpus = 0;
+			while (fgets(line,line_size,fp) != NULL) {
+				if (!strncmp(line,processor,strlen(processor)))
+					num_cpus++;
+			}
+			free(line);
+			nih_message("Counted %d CPUs\n",num_cpus);
+		}
+		fclose(fp);
+	}
+	if (!num_cpus)
+		num_cpus = 1;
+
 	/* Enable tracing of open() syscalls */
 	if (set_value (dfd, "events/fs/do_sys_open/enable",
 		       TRUE, &old_sys_open_enabled) < 0)
@@ -165,9 +190,9 @@ trace (int daemonise,
 
 		old_uselib_enabled = -1;
 	}
-	if (set_value (dfd, "buffer_size_kb", 128000, NULL) < 0)
+	if (set_value (dfd, "buffer_size_kb", 8192/num_cpus, &old_buffer_size_kb) < 0)
 		goto error;
-	if (set_value (dfd, "tracing_enabled",
+	if (set_value (dfd, "tracing_on",
 		       TRUE, &old_tracing_enabled) < 0)
 		goto error;
 
@@ -204,7 +229,7 @@ trace (int daemonise,
 	sigaction (SIGINT, &old_sigint, NULL);
 
 	/* Restore previous tracing settings */
-	if (set_value (dfd, "tracing_enabled",
+	if (set_value (dfd, "tracing_on",
 		       old_tracing_enabled, NULL) < 0)
 		goto error;
 	if (old_uselib_enabled >= 0)
@@ -224,6 +249,13 @@ trace (int daemonise,
 
 	/* Read trace log */
 	if (read_trace (NULL, dfd, "trace", &files, &num_files) < 0)
+		goto error;
+
+	/*
+	 * Restore the trace buffer size (which has just been read) and free
+	 * a bunch of memory.
+	 */
+	if (set_value (dfd, "buffer_size_kb", old_buffer_size_kb, NULL) < 0)
 		goto error;
 
 	/* Unmount the temporary debugfs mount if we mounted it */
@@ -458,12 +490,11 @@ trace_add_path (const void *parent,
 		nih_hash_add (path_hash, &entry->entry);
 	}
 
-	/* Make sure that we have an ordinary file, or a symlink to an
-	 * ordinary file.  This avoids us opening a fifo or socket.
+	/* Make sure that we have an ordinary file
+	 * This avoids us opening a fifo or socket or symlink.
 	 */
 	if ((lstat (pathname, &statbuf) < 0)
-	    || (S_ISLNK (statbuf.st_mode)
-		&& (stat (pathname, &statbuf) < 0))
+	    || (S_ISLNK (statbuf.st_mode))
 	    || (! S_ISREG (statbuf.st_mode)))
 		return 0;
 
@@ -574,7 +605,11 @@ ignore_path (const char *pathname)
 		return TRUE;
 	if (! strncmp (pathname, "/tmp/", 5))
 		return TRUE;
+	if (! strncmp (pathname, "/run/", 5))
+		return TRUE;
 	if (! strncmp (pathname, "/var/run/", 9))
+		return TRUE;
+	if (! strncmp (pathname, "/var/log/", 9))
 		return TRUE;
 	if (! strncmp (pathname, "/var/lock/", 10))
 		return TRUE;
