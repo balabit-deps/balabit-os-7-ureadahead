@@ -1,3 +1,10 @@
+ureadahead (0.100.0-21) bionic; urgency=medium
+
+  * add -q parameter to stop ureadahead from logging thousands of
+    lines of noise (LP: #1579580)
+
+ -- Dan Streetman <ddstreet@canonical.com>  Tue, 09 Apr 2019 17:01:18 -0400
+
 ureadahead (0.100.0-20) artful; urgency=medium
 
   * Do not install upstart system jobs.
